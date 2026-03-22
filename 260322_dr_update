@@ -1,0 +1,194 @@
+# ========================================================================
+# 1. 환경 변수 설정 (업데이트됨)
+# ========================================================================
+$vCenterServer = "vc-wld02-a.site-a.vcf.lab"
+$vCenterUser   = "administrator@vsphere.local"
+$vCenterPass   = "VMware123!VMware123!"
+
+$TargetHosts   = @("esx-20a.site-a.vcf.lab", "esx-21a.site-a.vcf.lab", "esx-22a.site-a.vcf.lab")
+$DatastoreName = "NFS_Datastore"
+$NfsIp         = "10.1.1.221"
+$NfsPath       = "/mnt/nfs_share"
+
+$VmNames       = @("DEF-DB", "DEF-WEB")
+$PgName        = "wld02-pg"
+
+$GuestUser     = "ocuser"
+$GuestPass     = "VMware123!"
+$ScriptCmd     = "echo '$GuestPass' | sudo -S /home/ocuser/mysql_backup.sh"
+
+# ------------------------------------------------------------------------
+# [네트워크 설정 값]
+# ------------------------------------------------------------------------
+$IpMapping     = @{ "DEF-DB" = "10.1.10.209"; "DEF-WEB" = "10.1.10.210" }
+$DrGateway     = "10.1.10.129"
+$DrDns         = "10.1.1.1"  # <--- 요청하신 DNS 주소로 업데이트 완료
+
+$ErrorActionPreference = "Stop"
+
+# 공통 함수
+Function Pause-Screen {
+    Write-Host "`n================================================================" -ForegroundColor DarkCyan
+    Read-Host "작업이 완료되었습니다. 메인 메뉴로 돌아가려면 Enter를 누르세요"
+}
+
+# ========================================================================
+# 메인 루프
+# ========================================================================
+$isRunning = $true
+while ($isRunning) {
+    Clear-Host
+    Write-Host "================ [ VCF DR 초정밀 제어 패널 ] ================" -ForegroundColor Cyan
+    Write-Host " [준비 단계]"
+    Write-Host "  1. vCenter 로그인"
+    Write-Host "  2. NFS 데이터스토어 마운트 (대상 호스트 전체)"
+    Write-Host "  3. VM 인벤토리 등록 (Register VM)"
+    Write-Host "  4. 네트워크 어댑터 연결 상태 확인 및 활성화 (Connect NIC)"
+    Write-Host "  5. VDS 포트그룹 강제 할당 (Set Network)"
+    
+    Write-Host "`n [실행 단계]"
+    Write-Host "  6. VM 전원 켜기 (Power On - Async)"
+    Write-Host "  7. VMware Tools 응답 대기 (Heartbeat 체크)"
+    Write-Host "  8. OS 내부 IP 자동 변경 (Netplan 주입)"
+    Write-Host "  9. 검증용 백업 쉘 스크립트 실행 (Invoke-VMScript)"
+    
+    Write-Host "`n [정리 단계]"
+    Write-Host "  10. VM 전원 강제 차단 (Power Off)"
+    Write-Host "  11. VM 인벤토리 등록 해제 (Unregister)"
+    Write-Host "  12. NFS 데이터스토어 언마운트 (Unmount)"
+    Write-Host "  13. vCenter 세션 로그아웃"
+    
+    Write-Host "------------------------------------------------------------"
+    Write-Host "  0. 프로그램 종료"
+    Write-Host "============================================================" -ForegroundColor Cyan
+    
+    $choice = Read-Host "수행할 작업 번호를 입력하세요"
+    Write-Host ""
+
+    switch ($choice) {
+        "1" {
+            Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
+            Try { Connect-VIServer -Server $vCenterServer -User $vCenterUser -Password $vCenterPass | Out-Null; Write-Host "✅ 연결 성공" -ForegroundColor Green } 
+            Catch { Write-Host "❌ 실패: $($_.Exception.Message)" -ForegroundColor Red }
+            Pause-Screen
+        }
+
+        "2" {
+            foreach ($esxi in $TargetHosts) {
+                Try { New-Datastore -Nfs -Name $DatastoreName -Path $NfsPath -NfsHost $NfsIp -VMHost $esxi | Out-Null; Write-Host "✅ [$esxi] 마운트 완료" -ForegroundColor Green }
+                Catch { Write-Host "⚠️ [$esxi] 이미 존재하거나 실패: $($_.Exception.Message)" -ForegroundColor Yellow }
+            }
+            Pause-Screen
+        }
+
+        "3" {
+            foreach ($VmName in $VmNames) {
+                Try { New-VM -VMFilePath "[$DatastoreName] $VmName/$VmName.vmx" -VMHost $TargetHosts[0] | Out-Null; Write-Host "✅ $VmName 등록 완료" -ForegroundColor Green }
+                Catch { Write-Host "⚠️ $VmName 등록 건너뜀: $($_.Exception.Message)" -ForegroundColor Yellow }
+            }
+            Pause-Screen
+        }
+
+        "4" {
+            Get-VM -Name $VmNames | Get-NetworkAdapter | Set-NetworkAdapter -Connected $true -StartConnected $true -Confirm:$false | Out-Null
+            Write-Host "✅ 모든 VM의 네트워크 어댑터 '연결' 상태 활성화 완료" -ForegroundColor Green
+            Pause-Screen
+        }
+
+        "5" {
+            $netObj = Get-VDPortgroup -Name $PgName -ErrorAction SilentlyContinue
+            if (-not $netObj) { $netObj = Get-VirtualPortGroup -Name $PgName }
+            Get-VM -Name $VmNames | Get-NetworkAdapter | Set-NetworkAdapter -Portgroup $netObj -Confirm:$false | Out-Null
+            Write-Host "✅ 모든 VM에 [$PgName] 포트그룹 할당 완료" -ForegroundColor Green
+            Pause-Screen
+        }
+
+        "6" {
+            Get-VM -Name $VmNames | Start-VM -RunAsync | Out-Null
+            Write-Host "✅ 전원 켜기 신호 송신 완료 (부팅 진행 중...)" -ForegroundColor Green
+            Pause-Screen
+        }
+
+        "7" {
+            Write-Host "VMware Tools 응답 대기 중 (최대 5분)..."
+            foreach ($vmName in $VmNames) {
+                do {
+                    $status = (Get-VM -Name $vmName).ExtensionData.Guest.ToolsStatus
+                    Write-Host " -> $vmName 상태: $status"
+                    Start-Sleep -Seconds 5
+                } until ($status -match "toolsOk|toolsOld")
+                Write-Host "✅ $vmName 준비 완료" -ForegroundColor Green
+            }
+            Pause-Screen
+        }
+
+"8" {
+            foreach ($vm in (Get-VM -Name $VmNames)) {
+                $targetIp = $IpMapping[$vm.Name]
+                
+                # @' ... '@ (작은따옴표)를 사용하면 내부의 $나 ()를 PowerShell이 절대 해석하지 않습니다.
+                # 다만, 외부 변수인 $targetIp, $DrGateway 등은 문자열 치환이 안 되므로 
+                # PowerShell의 -f (포맷 연산자)를 사용하여 값을 주입합니다.
+                
+                $bashTemplate = @'
+echo '{0}' | sudo -S bash -c "
+IFACE=\$(ip -o link show | awk -F': ' '{print \$2}' | grep -v lo | head -n 1 | tr -d ' ')
+cat <<EOF > /etc/netplan/99-dr-ip.yaml
+network:
+  version: 2
+  ethernets:
+    \${IFACE}:
+      dhcp4: no
+      addresses: [{1}/24]
+      gateway4: {2}
+      nameservers:
+        addresses: [{3}]
+EOF
+netplan apply
+"
+'@ -f $GuestPass, $targetIp, $DrGateway, $DrDns
+
+                Try { 
+                    Invoke-VMScript -VM $vm -GuestUser $GuestUser -GuestPassword $GuestPass -ScriptText $bashTemplate -ScriptType Bash | Out-Null
+                    Write-Host "✅ $($vm.Name) IP 변경 완료 ($targetIp / GW: $DrGateway / DNS: $DrDns)" -ForegroundColor Green 
+                }
+                Catch { Write-Host "❌ $($vm.Name) 실패: $($_.Exception.Message)" -ForegroundColor Red }
+            }
+            Pause-Screen
+        }
+
+        "9" {
+            Try {
+                $res = Invoke-VMScript -VM (Get-VM -Name "DEF-DB") -GuestUser $GuestUser -GuestPassword $GuestPass -ScriptText $ScriptCmd -ScriptType Bash
+                Write-Host "✅ 결과:`n$($res.ScriptOutput)" -ForegroundColor Green
+            } Catch { Write-Host "❌ 실행 실패: $($_.Exception.Message)" -ForegroundColor Red }
+            Pause-Screen
+        }
+
+        "10" {
+            Get-VM -Name $VmNames | Stop-VM -Confirm:$false | Out-Null
+            Write-Host "✅ 전원 차단 완료" -ForegroundColor Green
+            Pause-Screen
+        }
+
+        "11" {
+            Get-VM -Name $VmNames | Remove-VM -DeletePermanently:$false -Confirm:$false | Out-Null
+            Write-Host "✅ 인벤토리 등록 해제 완료" -ForegroundColor Green
+            Pause-Screen
+        }
+
+        "12" {
+            foreach ($esxi in $TargetHosts) {
+                $ds = Get-Datastore -Name $DatastoreName -VMHost $esxi -ErrorAction SilentlyContinue
+                if ($ds) { Remove-Datastore -Datastore $ds -VMHost $esxi -Confirm:$false | Out-Null; Write-Host "✅ [$esxi] 분리 완료" -ForegroundColor Green }
+            }
+            Pause-Screen
+        }
+
+        "13" {
+            Disconnect-VIServer -Confirm:$false; Write-Host "✅ 로그아웃 완료" -ForegroundColor Green; Pause-Screen
+        }
+
+        "0" { $isRunning = $false }
+    }
+}
