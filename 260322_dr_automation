@@ -1,0 +1,285 @@
+<#
+.SYNOPSIS
+  [메뉴 기반 세션 유지형] VCF DR/백업 검증 자동화 스크립트 (에러 발생 시 메뉴 복귀 완벽 보장)
+#>
+
+# ========================================================================
+# 1. 환경 변수 설정
+# ========================================================================
+$vCenterServer = "vc-wld02-a.site-a.vcf.lab"
+$vCenterUser   = "administrator@vsphere.local"
+$vCenterPass   = "VMware123!VMware123!"
+
+$TargetHosts   = @("esx-20a.site-a.vcf.lab", "esx-21a.site-a.vcf.lab", "esx-22a.site-a.vcf.lab")
+$DatastoreName = "NFS_Datastore"
+$NfsIp         = "10.1.1.221"
+$NfsPath       = "/mnt/nfs_share"
+
+$VmNames       = @("DEF-DB", "DEF-WEB")
+$VdsName       = "wld02-vds"
+$PgName        = "wld02-pg"
+
+$GuestUser     = "ocuser"
+$GuestPass     = "VMware123!"  # <--- [중요] 실제 운영체제 패스워드로 꼭 변경하세요
+$ScriptCmd     = "echo '$GuestPass' | sudo -S /home/ocuser/mysql_backup.sh"
+
+# 스크립트 전체의 기본 에러 액션을 Stop으로 두어 에러를 캐치하되, Catch 블록에서는 스크립트를 죽이지 않도록 설계
+$ErrorActionPreference = "Stop"
+
+# ========================================================================
+# 공통 함수: 작업 후 메뉴 복귀 대기
+# ========================================================================
+Function Pause-Screen {
+    Write-Host "`n================================================================" -ForegroundColor DarkCyan
+    Read-Host "작업이 종료되었습니다. 메인 메뉴로 돌아가려면 Enter 키를 누르세요"
+}
+
+# ========================================================================
+# 메인 루프 (메뉴 시스템)
+# ========================================================================
+$isRunning = $true
+while ($isRunning) {
+    Clear-Host
+    Write-Host "========================================================" -ForegroundColor Cyan
+    Write-Host "          VCF 복구 검증 자동화 (세션 유지 모드)         " -ForegroundColor Green
+    Write-Host "========================================================" -ForegroundColor Cyan
+    Write-Host "  1. vCenter 로그인 (세션 연결)"
+    Write-Host "  2. NFS 데이터스토어 마운트 (3대 호스트)"
+    Write-Host "  3. VM 인벤토리 등록 (Register)"
+    Write-Host "  4. VDS 포트그룹 네트워크 변경"
+    Write-Host "  5. VM 전원 켜기 및 부팅 대기"
+    Write-Host "  6. 내부 백업 쉘 스크립트 실행 (Invoke-VMScript)"
+    Write-Host "--------------------------------------------------------"
+    Write-Host "  7. [정리] VM 전원 차단 (Power Off)"
+    Write-Host "  8. [정리] VM 인벤토리 등록 해제 (Unregister)"
+    Write-Host "  9. [정리] NFS 데이터스토어 마운트 해제 (Unmount)"
+    Write-Host "--------------------------------------------------------"
+    Write-Host "  0. 종료 및 vCenter 로그아웃"
+    Write-Host "========================================================" -ForegroundColor Cyan
+    
+    $choice = Read-Host "원하시는 작업 번호를 입력하세요"
+    Write-Host ""
+
+    switch ($choice) {
+        "1" {
+            Write-Host "[Step 1] vCenter Server ($vCenterServer) 에 연결 중..." -ForegroundColor Cyan
+            Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
+            Try {
+                Connect-VIServer -Server $vCenterServer -User $vCenterUser -Password $vCenterPass -ErrorAction Stop | Out-Null
+                Write-Host " -> vCenter 연결 성공!" -ForegroundColor Green
+            } Catch {
+                # Write-Error 대신 Write-Host를 사용하여 스크립트가 튕기지 않게 보호합니다.
+                Write-Host " ❌ vCenter 연결 실패: $($_.Exception.Message)" -ForegroundColor Red
+            }
+            Pause-Screen
+        }
+
+        "2" {
+            Write-Host "[Step 2] 다중 호스트에 NFS 마운트 진행 중..." -ForegroundColor Cyan
+            foreach ($esxi in $TargetHosts) {
+                Try {
+                    $dsCheck = Get-Datastore -Name $DatastoreName -VMHost $esxi -ErrorAction SilentlyContinue
+                    if (-not $dsCheck) {
+                        New-Datastore -Nfs -Name $DatastoreName -Path $NfsPath -NfsHost $NfsIp -VMHost $esxi -ErrorAction Stop | Out-Null
+                        Write-Host " -> [$esxi] 마운트 성공" -ForegroundColor Green
+                    } else {
+                        Write-Host " -> [$esxi] 이미 마운트되어 있습니다." -ForegroundColor DarkGray
+                    }
+                } Catch {
+                    Write-Host " ❌ [$esxi] 마운트 실패: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            Pause-Screen
+        }
+
+        "3" {
+            Write-Host "[Step 3] VMX 파일을 읽어 인벤토리에 등록 중..." -ForegroundColor Cyan
+            $RegHost = $TargetHosts[0] 
+            
+            foreach ($VmName in $VmNames) {
+                Try {
+                    $vmxPath = "[$DatastoreName] $VmName/$VmName.vmx"
+                    $vm = Get-VM -Name $VmName -ErrorAction SilentlyContinue
+                    if (-not $vm) {
+                        New-VM -VMFilePath $vmxPath -VMHost $RegHost -ErrorAction Stop | Out-Null
+                        Write-Host " -> $VmName 등록 완료 (Target: $RegHost)" -ForegroundColor Green
+                    } else {
+                        Write-Host " -> $VmName (이)가 이미 인벤토리에 존재합니다." -ForegroundColor DarkGray
+                    }
+                } Catch {
+                    Write-Host " ❌ [$VmName] 등록 실패: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            Pause-Screen
+        }
+
+        "4" {
+            Write-Host "[Step 4] VDS 포트그룹 네트워크 변경 중..." -ForegroundColor Cyan
+            Try {
+                # 네트워크 객체를 유연하게 찾습니다.
+                $netObj = Get-VDPortgroup -Name $PgName -ErrorAction SilentlyContinue
+                if (-not $netObj) { $netObj = Get-VirtualPortGroup -Name $PgName -ErrorAction Stop }
+                
+                $vmsToNetwork = Get-VM -Name $VmNames -ErrorAction SilentlyContinue
+                if (-not $vmsToNetwork) { throw "네트워크를 변경할 대상을 인벤토리에서 찾을 수 없습니다." }
+
+                foreach ($vm in $vmsToNetwork) {
+                    $nic = Get-NetworkAdapter -VM $vm | Select-Object -First 1
+                    if ($nic) {
+                        # 객체 타입에 따라 파라미터를 다르게 주어 에러(Invalid Parameter) 방지
+                        if ($netObj.GetType().Name -match "VDPortgroup") {
+                            Set-NetworkAdapter -NetworkAdapter $nic -Portgroup $netObj -Connected $true -Confirm:$false -ErrorAction Stop | Out-Null
+                        } else {
+                            Set-NetworkAdapter -NetworkAdapter $nic -NetworkName $PgName -Connected $true -Confirm:$false -ErrorAction Stop | Out-Null
+                        }
+                        Write-Host " -> $($vm.Name) 네트워크 연결 완료 ($PgName)" -ForegroundColor Green
+                    } else {
+                        Write-Host " -> $($vm.Name) 에 연결할 네트워크 어댑터가 없습니다." -ForegroundColor Yellow
+                    }
+                }
+            } Catch {
+                Write-Host "`n ❌ 네트워크 포트그룹 설정 실패: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host " ⚠️ [Tip] 에러가 발생했지만 스크립트가 종료되지 않습니다. 5번(전원 On) 후 다시 4번을 시도해 볼 수 있습니다." -ForegroundColor Yellow
+            }
+            Pause-Screen
+        }
+
+        "5" {
+            Write-Host "[Step 5] VM 전원 켜기 및 VMware Tools 상태 대기 중..." -ForegroundColor Cyan
+            Try {
+                $vmsToPower = Get-VM -Name $VmNames -ErrorAction SilentlyContinue
+                if (-not $vmsToPower) { throw "전원을 켤 대상을 인벤토리에서 찾을 수 없습니다." }
+
+                $vmsToPower | Start-VM -RunAsync -ErrorAction Stop | Out-Null
+                
+                $TimeoutSeconds = 300
+                foreach ($vm in $vmsToPower) {
+                    Write-Host " -> $($vm.Name) 부팅 대기 중..."
+                    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+                    do {
+                        Start-Sleep -Seconds 5
+                        $liveVm = Get-VM -Name $vm.Name
+                        $toolsStatus = $liveVm.ExtensionData.Guest.ToolsStatus
+                        
+                        if ($watch.Elapsed.TotalSeconds -gt $TimeoutSeconds) {
+                            throw "$($vm.Name) 의 VMware Tools가 5분 내에 응답하지 않습니다."
+                        }
+                    } until ($toolsStatus -match "toolsOk|toolsOld")
+                    
+                    $watch.Stop()
+                    Write-Host " -> $($vm.Name) 부팅 완료 (Tools 준비됨)" -ForegroundColor Green
+                }
+            } Catch {
+                Write-Host "`n ❌ 전원 켜기 또는 부팅 대기 중 에러: $($_.Exception.Message)" -ForegroundColor Red
+            }
+            Pause-Screen
+        }
+
+        "6" {
+            Write-Host "[Step 6] 내부 백업 쉘 스크립 실행 중..." -ForegroundColor Cyan
+            Try {
+                $DbVm = Get-VM -Name "DEF-DB" -ErrorAction Stop
+                $ScriptResult = Invoke-VMScript -VM $DbVm -GuestUser $GuestUser -GuestPassword $GuestPass -ScriptText $ScriptCmd -ScriptType Bash -ErrorAction Stop
+                
+                Write-Host " -> [백업 스크립트 실행 결과]" -ForegroundColor Yellow
+                Write-Host $ScriptResult.ScriptOutput
+            } Catch {
+                Write-Host "`n ❌ Invoke-VMScript 에러 발생: $($_.Exception.Message)" -ForegroundColor Red
+            }
+            Pause-Screen
+        }
+
+        "7" {
+            Write-Host "[Step 7] VM 전원 차단(Power Off) 진행 중..." -ForegroundColor Cyan
+            Try {
+                $vmsToPowerOff = Get-VM -Name $VmNames -ErrorAction SilentlyContinue
+                
+                if ($vmsToPowerOff) {
+                    foreach ($vm in $vmsToPowerOff) {
+                        if ($vm.PowerState -eq 'PoweredOn') {
+                            Write-Host " -> $($vm.Name) 전원 끄는 중..."
+                            Try {
+                                Stop-VM -VM $vm -Confirm:$false -ErrorAction Stop | Out-Null
+                                Write-Host " -> $($vm.Name) 전원 차단 완료." -ForegroundColor Green
+                            } Catch {
+                                Write-Host " ❌ $($vm.Name) 전원 끄기 실패: $($_.Exception.Message)" -ForegroundColor Red
+                            }
+                        } else {
+                            Write-Host " -> $($vm.Name) 은(는) 이미 전원이 꺼져 있습니다." -ForegroundColor DarkGray
+                        }
+                    }
+                } else {
+                    Write-Host " -> 전원을 끌 VM이 인벤토리에 없습니다." -ForegroundColor DarkGray
+                }
+            } Catch {
+                Write-Host " ❌ 전원 차단 중 에러 발생: $($_.Exception.Message)" -ForegroundColor Red
+            }
+            Pause-Screen
+        }
+
+        "8" {
+            Write-Host "[Step 8] VM 인벤토리 등록 해제(Unregister) 진행 중..." -ForegroundColor Cyan
+            Try {
+                $vmsToRemove = Get-VM -Name $VmNames -ErrorAction SilentlyContinue
+                
+                if ($vmsToRemove) {
+                    foreach ($vm in $vmsToRemove) {
+                        Write-Host " -> $($vm.Name) 인벤토리 등록 해제 중..."
+                        Try {
+                            if ($vm.PowerState -eq 'PoweredOn') {
+                                Write-Host " ⚠️ $($vm.Name) 전원이 켜져 있어 강제로 차단합니다." -ForegroundColor Yellow
+                                Stop-VM -VM $vm -Confirm:$false -Force -ErrorAction SilentlyContinue | Out-Null
+                                Start-Sleep -Seconds 3
+                            }
+                            
+                            Remove-VM -VM $vm -DeletePermanently:$false -Confirm:$false -ErrorAction Stop | Out-Null
+                            Write-Host " -> $($vm.Name) 등록 해제 완료." -ForegroundColor Green
+                        } Catch {
+                            Write-Host " ❌ $($vm.Name) 등록 해제 실패: $($_.Exception.Message)" -ForegroundColor Red
+                        }
+                    }
+                } else {
+                    Write-Host " -> 해제할 VM이 인벤토리에 없습니다." -ForegroundColor DarkGray
+                }
+            } Catch {
+                Write-Host " ❌ 등록 해제 중 에러 발생: $($_.Exception.Message)" -ForegroundColor Red
+            }
+            Pause-Screen
+        }
+
+        "9" {
+            Write-Host "[Step 9] 각 ESXi 호스트별 NFS 데이터스토어 마운트 해제 진행 중..." -ForegroundColor Cyan
+            Write-Host " -> vCenter 스토리지 잠금 해제 대기 중 (5초)..." -ForegroundColor DarkGray
+            Start-Sleep -Seconds 5
+            
+            foreach ($esxi in $TargetHosts) {
+                Try {
+                    $hostObj = Get-VMHost -Name $esxi -ErrorAction Stop
+                    $dsToRemove = Get-Datastore -Name $DatastoreName -VMHost $hostObj -ErrorAction SilentlyContinue
+                    
+                    if ($dsToRemove) {
+                        Write-Host " -> [$esxi] 에서 NFS 마운트 해제 중..."
+                        Remove-Datastore -Datastore $dsToRemove -VMHost $hostObj -Confirm:$false -ErrorAction Stop | Out-Null
+                        Write-Host " -> [$esxi] 분리 완료!" -ForegroundColor Green
+                    } else {
+                        Write-Host " -> [$esxi] 에 해제할 데이터스토어가 없습니다 (이미 분리됨)." -ForegroundColor DarkGray
+                    }
+                } Catch {
+                    Write-Host "`n ❌ [$esxi] 분리 실패: $($_.Exception.Message)" -ForegroundColor Red
+                }
+            }
+            Pause-Screen
+        }
+
+        "0" {
+            Write-Host "vCenter 세션을 종료하고 스크립트를 빠져나갑니다." -ForegroundColor Cyan
+            Disconnect-VIServer -Server $vCenterServer -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
+            $isRunning = $false
+        }
+
+        default {
+            Write-Host "잘못된 번호입니다. 다시 선택해 주세요." -ForegroundColor Red
+            Start-Sleep -Seconds 2
+        }
+    }
+}
