@@ -6,10 +6,8 @@ if (-not $global:DefaultVIServer -or $global:DefaultVIServer.Name -ne 'vc-wld02-
     Connect-VIServer -Server 'vc-wld02-a.site-a.vcf.lab' -User 'administrator@vsphere.local' -Password 'VMware123!VMware123!' | Out-Null
 }
 
-# 💡 CSV 파일 저장 경로 설정 (PC 사용자명 + 타임스탬프)
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$localUser = $env:USERNAME # 현재 스크립트를 실행 중인 PC의 윈도우 접속 계정명
-# 저장 경로: 각 사용자의 바탕화면 (예: C:\Users\Hong\Desktop\vSphere_Event_History_Hong_20260324_103000.csv)
+$localUser = $env:USERNAME 
 $csvPath = "$env:USERPROFILE\Desktop\vSphere_Event_History_${localUser}_$timestamp.csv"
 
 $interval = 3
@@ -47,6 +45,64 @@ while ($true) {
         if ($badDs) { Write-Host "$dsStr $($badDs.Count)개 접근 불가 ❌" -ForegroundColor Red }
         else { Write-Host "$dsStr 전체 접근 가능 🟢" -ForegroundColor Green }
     } catch { }
+
+    <# ★ 강력해진 실시간 과부하 상태 체크 (VM CPU 연산 추가) #>
+    Write-Host "`n[ 📊 실시간 과부하 상태 (CPU/Mem > 70% 경고 핫스팟) ]" -ForegroundColor DarkYellow
+    try {
+        $highLoadHosts = @()
+        $highLoadVms = @()
+        $hostMhzMap = @{} # VM의 CPU % 계산을 위한 호스트 클럭 속도 저장용 배열
+
+        # 1) 호스트 부하 계산 및 클럭 속도 매핑
+        $hostsView = Get-View -ViewType HostSystem -Property Name, Summary.QuickStats, Summary.Hardware
+        foreach ($h in $hostsView) {
+            if ($h.Summary.Hardware.CpuMhz -and $h.Summary.Hardware.NumCpuCores) {
+                # VM 계산을 위해 호스트 MoRef ID와 CpuMhz를 매핑해 둡니다.
+                $hostMhzMap[$h.MoRef.Value] = $h.Summary.Hardware.CpuMhz 
+                
+                $cpuPct = [math]::Round(($h.Summary.QuickStats.OverallCpuUsage / ($h.Summary.Hardware.CpuMhz * $h.Summary.Hardware.NumCpuCores)) * 100, 1)
+                $memPct = [math]::Round(($h.Summary.QuickStats.OverallMemoryUsage / ($h.Summary.Hardware.MemorySize / 1048576)) * 100, 1)
+                
+                if ($cpuPct -gt 70 -or $memPct -gt 70) {
+                    $highLoadHosts += [PSCustomObject]@{ 대상 = "[Host] $($h.Name)"; CPU사용률 = "$cpuPct %"; Mem사용률 = "$memPct %" }
+                }
+            }
+        }
+
+        # 2) 전원이 켜진 VM 부하 계산 (정확한 CPU % 및 하이퍼바이저 기반 Mem %)
+        $vmsView = Get-View -ViewType VirtualMachine -Filter @{"Runtime.PowerState"="poweredOn"} -Property Name, Summary.QuickStats, Summary.Config, Runtime.Host
+        foreach ($v in $vmsView) {
+            $vmCpuPct = 0
+            $vmMemPct = 0
+
+            # VM CPU 계산: VM의 OverallCpuUsage(MHz) / (할당된 vCPU 개수 * 호스트 1코어당 MHz)
+            $hMhz = $hostMhzMap[$v.Runtime.Host.Value]
+            $vCpu = $v.Summary.Config.NumCpu
+            if ($hMhz -and $vCpu -and $v.Summary.QuickStats.OverallCpuUsage -gt 0) {
+                $vmCpuPct = [math]::Round(($v.Summary.QuickStats.OverallCpuUsage / ($hMhz * $vCpu)) * 100, 1)
+            }
+
+            # VM 메모리 계산: VMware Tools 없이도 잡히도록 HostMemoryUsage(MB) 기준 연산
+            if ($v.Summary.Config.MemorySizeMB -gt 0 -and $v.Summary.QuickStats.HostMemoryUsage -gt 0) {
+                $vmMemPct = [math]::Round(($v.Summary.QuickStats.HostMemoryUsage / $v.Summary.Config.MemorySizeMB) * 100, 1)
+            }
+            
+            # 임계치 70% 초과 시 목록 추가
+            if ($vmCpuPct -gt 70 -or $vmMemPct -gt 70) {
+                $highLoadVms += [PSCustomObject]@{ 대상 = "[VM] $($v.Name)"; CPU사용률 = "$vmCpuPct %"; Mem사용률 = "$vmMemPct %" }
+            }
+        }
+
+        # 3) 결과 출력 (호스트는 Red, VM은 Yellow로 시각적 분리)
+        if ($highLoadHosts -or $highLoadVms) {
+            if ($highLoadHosts) { $highLoadHosts | Format-Table -AutoSize | Out-String | Write-Host -ForegroundColor Red }
+            if ($highLoadVms) { $highLoadVms | Format-Table -AutoSize | Out-String | Write-Host -ForegroundColor Yellow }
+        } else {
+            Write-Host "▶ 모든 호스트 및 VM 리소스 상태 안정적 (🟢 70% 미만)" -ForegroundColor Green
+        }
+    } catch { 
+        Write-Host "부하 상태를 가져오는 중 오류 발생" -ForegroundColor DarkGray
+    }
 
     <# 1. 접속 중인 사용자 #>
     Write-Host "`n[ 👤 현재 접속 중인 사용자 (Active Sessions) ]" -ForegroundColor Magenta
@@ -118,7 +174,6 @@ while ($true) {
         elseif ($evtType -match "BadUsernameSessionEvent|AlreadyAuthenticatedSessionEvent") { $isAuthEvent = $true; $authStatus = "로그인 실패 🚫"; $authColor = "Red" } 
         elseif ($evtType -match "UserLogoutSessionEvent|SessionTerminatedEvent") { $isAuthEvent = $true; $authStatus = "로그아웃 🔒"; $authColor = "DarkGray" }
 
-        # --- [ 배열 누적 및 새 이벤트 감지 ] ---
         if ($isAuthEvent -and -not $isSystemAccount) {
             if (-not ($loginHistory.Key -contains $evt.Key)) {
                 $isNewEvent = $true
@@ -144,20 +199,15 @@ while ($true) {
             }
         }
 
-        # 💡 [ CSV 저장 로직 ] : 새 이벤트 발생 시 파일에 즉시 기록
         if ($isNewEvent) {
             $csvData = [PSCustomObject]@{
-                수집PC계정 = $localUser  # CSV 내용 안에도 누가 수집했는지 명시적으로 남깁니다
+                수집PC계정 = $localUser  
                 발생시간 = $evt.CreatedTime.ToString("yyyy-MM-dd HH:mm:ss")
                 분류 = $evtCategory
                 사용자 = $user
                 메시지 = $msg
             }
-            try {
-                $csvData | Export-Csv -Path $csvPath -Append -NoTypeInformation -Encoding UTF8 -Force
-            } catch {
-                # 파일 접근 에러 발생 시 무시
-            }
+            try { $csvData | Export-Csv -Path $csvPath -Append -NoTypeInformation -Encoding UTF8 -Force } catch { }
         }
     }
 
