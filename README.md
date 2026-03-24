@@ -1,5 +1,5 @@
 **[실습환경 VPN 접속]**
-[https://cmail.kakao.com/v2/mails/0000000000008w4/attachments/MjoxLjI6MTI1NDoyOTUyOTYwOmFwcGxpY2F0aW9uL3ppcDpiYXNlNjQ6WG5JbXB3MWZjQ2U3cDNEMU5SSWRoQQ/download/FortiClientMiniSetup-Windows-x64-Enterprise-7.4.3%20(1).zip](https://ent.box.com/s/uqiczjowp9e0hn5rmw6gpn1ddwawgi2s)
+https://ent.box.com/s/uqiczjowp9e0hn5rmw6gpn1ddwawgi2s
 
 **[vCenter 실습 환경 접속]**
 
