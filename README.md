@@ -1,7 +1,20 @@
-요청하신 VCF(VMware Cloud Foundation) PowerCLI 실습 코드를 깃허브(GitHub)에서 바로 사용할 수 있도록 깔끔한 **Markdown(.md) 포맷**으로 정리해 드립니다. 
+1. PowerCLI 실습용 (vSphere 8 Workload Domain)
+vCenter Server : vc-wld02-a.site-a.vcf.lab
 
-아래 내용을 복사하여 깃허브 저장소의 `README.md` 또는 실습용 마크다운 파일에 붙여넣기 하시면 됩니다.
+계정 정보 : vcf01@vsphere.local (또는 지정된 실습 계정)
 
+2. VMware Live Site Recovery (SRM) 실습용
+[VCF9 Management Domain]
+
+vCenter Server : vc-mgmt-a.site-a.vcf.lab
+
+SRM Appliance : vlr-mgmt-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)
+
+[VCF9 Workload Domain]
+
+vCenter Server : vc-wld01-a.site-a.vcf.lab
+
+SRM Appliance : vlr-wld01-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)
 ---
 
 ```markdown
