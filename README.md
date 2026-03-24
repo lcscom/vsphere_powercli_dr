@@ -12,12 +12,10 @@ vCenter Server : vc-wld02-a.site-a.vcf.lab
 **[VCF9 Management Domain]**
 
 **vCenter Server : vc-mgmt-a.site-a.vcf.lab**
-**
-SRM Appliance : vlr-mgmt-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)**
+**SRM Appliance : vlr-mgmt-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)**
 
-**[VCF9 Workload Domain]
-****
-vCenter Server : vc-wld01-a.site-a.vcf.lab**
+**[VCF9 Workload Domain]****
+**vCenter Server : vc-wld01-a.site-a.vcf.lab**
 
 SRM Appliance : vlr-wld01-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)
 ---
