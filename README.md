@@ -1,21 +1,28 @@
-1. PowerCLI 실습용 (vSphere 8 Workload Domain)
+**[실습환경 VPN 접속]
+**
+https://cmail.kakao.com/v2/mails/0000000000008w4/attachments/MjoxLjI6MTI1NDoyOTUyOTYwOmFwcGxpY2F0aW9uL3ppcDpiYXNlNjQ6WG5JbXB3MWZjQ2U3cDNEMU5SSWRoQQ/download/FortiClientMiniSetup-Windows-x64-Enterprise-7.4.3%20(1).zip
+
+**
+[vCenter 실습 환경 접속]**
+**1. PowerCLI 실습용 (vSphere 8 Workload Domain)**
 vCenter Server : vc-wld02-a.site-a.vcf.lab
 
-계정 정보 : vcf01@vsphere.local (또는 지정된 실습 계정)
+**계정 정보 : vcf01@vsphere.local (또는 지정된 실습 계정)**
 
-2. VMware Live Site Recovery (SRM) 실습용
-[VCF9 Management Domain]
+**2. VMware Live Site Recovery (SRM) 실습용**
+**[VCF9 Management Domain]**
 
-vCenter Server : vc-mgmt-a.site-a.vcf.lab
+**vCenter Server : vc-mgmt-a.site-a.vcf.lab**
+**
+SRM Appliance : vlr-mgmt-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)**
 
-SRM Appliance : vlr-mgmt-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)
-
-[VCF9 Workload Domain]
-
-vCenter Server : vc-wld01-a.site-a.vcf.lab
+**[VCF9 Workload Domain]
+****
+vCenter Server : vc-wld01-a.site-a.vcf.lab**
 
 SRM Appliance : vlr-wld01-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)
 ---
+
 
 ```markdown
 # VCF PowerCLI 실습 가이드 (Hands-on Lab)
