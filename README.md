@@ -9,12 +9,15 @@ https://cmail.kakao.com/v2/mails/0000000000008w4/attachments/MjoxLjI6MTI1NDoyOTU
 **계정 정보 : vcf01@vsphere.local (또는 지정된 실습 계정)**
 
 **2. VMware Live Site Recovery (SRM) 실습용**
+
 **[VCF9 Management Domain]**
 
 **vCenter Server : vc-mgmt-a.site-a.vcf.lab**
+
 **SRM Appliance : vlr-mgmt-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)**
 
 **[VCF9 Workload Domain]****
+
 **vCenter Server : vc-wld01-a.site-a.vcf.lab**
 
 **SRM Appliance : vlr-wld01-a.site-a.vcf.lab (계정: admin / 패스워드: VMware123!VMware123!)**
